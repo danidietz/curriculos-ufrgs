@@ -1,149 +1,78 @@
-"""
-views/distribuicao.py — Gráficos de distribuição de créditos e carga horária.
-"""
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
+"""Gráficos de distribuição de CH e créditos por etapa."""
 import streamlit as st
-
-
-_CORES = {
-    "Obrigatória": "#1D9E75",
-    "Eletiva":     "#534AB7",
-    "Desconhecido":"#888780",
-}
-_NATUREZA_CORES = {
-    "HUM": "#854F0B",
-    "INT": "#0F6E56",
-    "TEC": "#185FA5",
-    "CFU": "#26215C",
-}
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 
 def render_distribuicao(df_curso: pd.DataFrame) -> None:
-    """Renderiza os gráficos de distribuição para um curso."""
+    if df_curso.empty:
+        st.warning("Sem dados.")
+        return
 
-    df = df_curso[df_curso["etapa"].notna()].copy()
-    df["etapa"] = df["etapa"].astype(int)
-
-    tab1, tab2, tab3 = st.tabs([
-        "📊 CH por Etapa", "🎓 Créditos por Etapa", "🥧 Obrigatórias vs Eletivas"
-    ])
+    tab1, tab2, tab3 = st.tabs(["📊 CH por Etapa", "📈 Créditos por Etapa", "🥧 Obrig vs Eletiva"])
 
     with tab1:
-        _grafico_ch_por_etapa(df)
+        df_ch = (
+            df_curso[df_curso["etapa"].notna()]
+            .groupby(["etapa", "carater"], as_index=False)["carga_horaria"]
+            .sum()
+        )
+        df_ch["etapa"] = df_ch["etapa"].astype(int)
+        df_ch = df_ch.sort_values("etapa")
+        fig = px.bar(df_ch, x="etapa", y="carga_horaria", color="carater",
+                     labels={"etapa": "Etapa", "carga_horaria": "Carga Horária (h)", "carater": "Caráter"},
+                     color_discrete_map={"Obrigatória": "#1a6b3c", "Eletiva": "#1a4a7a"},
+                     barmode="stack")
+        fig.update_layout(height=400, margin=dict(t=20))
+        st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        _grafico_creditos_por_etapa(df)
+        df_cr = (
+            df_curso[df_curso["etapa"].notna()]
+            .groupby(["etapa", "carater"], as_index=False)["creditos"]
+            .sum()
+        )
+        df_cr["etapa"] = df_cr["etapa"].astype(int)
+        df_cr = df_cr.sort_values("etapa")
+        fig2 = px.bar(df_cr, x="etapa", y="creditos", color="carater",
+                      labels={"etapa": "Etapa", "creditos": "Créditos", "carater": "Caráter"},
+                      color_discrete_map={"Obrigatória": "#1a6b3c", "Eletiva": "#1a4a7a"},
+                      barmode="stack")
+        fig2.update_layout(height=400, margin=dict(t=20))
+        st.plotly_chart(fig2, use_container_width=True)
 
     with tab3:
-        _grafico_pizza(df_curso)
+        contagem = df_curso["carater"].value_counts().reset_index()
+        contagem.columns = ["carater", "quantidade"]
+        fig3 = px.pie(contagem, values="quantidade", names="carater",
+                      color="carater",
+                      color_discrete_map={"Obrigatória": "#1a6b3c", "Eletiva": "#1a4a7a"})
+        fig3.update_layout(height=350, margin=dict(t=20))
 
-    # Natureza (só se tiver dados)
-    if df_curso["natureza"].notna().any():
-        st.markdown("---")
-        _grafico_natureza(df_curso)
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.plotly_chart(fig3, use_container_width=True)
+        with col2:
+            st.markdown("### Resumo")
+            for _, row in contagem.iterrows():
+                pct = 100 * row["quantidade"] / len(df_curso)
+                st.metric(row["carater"], f"{row['quantidade']} disc", f"{pct:.0f}%")
+            ch_obrig = df_curso[df_curso["carater"]=="Obrigatória"]["carga_horaria"].sum()
+            ch_elet  = df_curso[df_curso["carater"]=="Eletiva"]["carga_horaria"].sum()
+            st.markdown(f"**CH Obrigatória:** {int(ch_obrig)}h")
+            st.markdown(f"**CH Eletiva:** {int(ch_elet)}h")
 
-
-def _grafico_ch_por_etapa(df: pd.DataFrame) -> None:
-    agrupado = (
-        df.groupby(["etapa", "carater"])["carga_horaria"]
-        .sum()
-        .reset_index()
-    )
-    fig = px.bar(
-        agrupado, x="etapa", y="carga_horaria", color="carater",
-        color_discrete_map=_CORES,
-        labels={"etapa": "Etapa", "carga_horaria": "Carga Horária (h)", "carater": "Caráter"},
-        title="Carga Horária por Etapa",
-        barmode="stack",
-        text_auto=True,
-    )
-    fig.update_layout(
-        paper_bgcolor="#F7F6F2", plot_bgcolor="#F7F6F2",
-        legend_title_text="Caráter",
-        xaxis=dict(tickmode="linear"),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Tabela resumo
-    pivot = agrupado.pivot_table(
-        index="etapa", columns="carater", values="carga_horaria", fill_value=0
-    )
-    pivot["Total"] = pivot.sum(axis=1)
-    st.dataframe(pivot.style.format("{:.0f}h"), use_container_width=True)
-
-
-def _grafico_creditos_por_etapa(df: pd.DataFrame) -> None:
-    agrupado = (
-        df.groupby(["etapa", "carater"])["creditos"]
-        .sum()
-        .reset_index()
-    )
-    fig = px.bar(
-        agrupado, x="etapa", y="creditos", color="carater",
-        color_discrete_map=_CORES,
-        labels={"etapa": "Etapa", "creditos": "Créditos", "carater": "Caráter"},
-        title="Créditos por Etapa",
-        barmode="stack",
-        text_auto=True,
-    )
-    fig.update_layout(
-        paper_bgcolor="#F7F6F2", plot_bgcolor="#F7F6F2",
-        xaxis=dict(tickmode="linear"),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def _grafico_pizza(df_curso: pd.DataFrame) -> None:
-    col1, col2 = st.columns(2)
-
-    # Por caráter — CH
-    with col1:
-        por_carater = df_curso.groupby("carater")["carga_horaria"].sum().reset_index()
-        fig = go.Figure(go.Pie(
-            labels=por_carater["carater"],
-            values=por_carater["carga_horaria"],
-            marker_colors=[_CORES.get(c, "#aaa") for c in por_carater["carater"]],
-            hole=0.4,
-            textinfo="label+percent",
-        ))
-        fig.update_layout(
-            title="CH por Caráter",
-            paper_bgcolor="#F7F6F2",
-            showlegend=False,
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Por caráter — componentes
-    with col2:
-        contagem = df_curso.groupby("carater")["codigo"].count().reset_index()
-        fig = go.Figure(go.Pie(
-            labels=contagem["carater"],
-            values=contagem["codigo"],
-            marker_colors=[_CORES.get(c, "#aaa") for c in contagem["carater"]],
-            hole=0.4,
-            textinfo="label+percent",
-        ))
-        fig.update_layout(
-            title="Nº de Componentes por Caráter",
-            paper_bgcolor="#F7F6F2",
-            showlegend=False,
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-
-def _grafico_natureza(df_curso: pd.DataFrame) -> None:
-    """Apenas para cursos com coluna Natureza preenchida (BICT)."""
-    st.markdown("#### Distribuição por Natureza (BICT)")
-    por_nat = df_curso.groupby("natureza")["carga_horaria"].sum().reset_index()
-    fig = px.bar(
-        por_nat, x="natureza", y="carga_horaria",
-        color="natureza",
-        color_discrete_map=_NATUREZA_CORES,
-        labels={"natureza": "Natureza", "carga_horaria": "CH (h)"},
-        title="Carga Horária por Natureza",
-        text_auto=True,
-    )
-    fig.update_layout(paper_bgcolor="#F7F6F2", plot_bgcolor="#F7F6F2", showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+        # Distribuição por Natureza (só BICT)
+        if df_curso["natureza"].notna().any():
+            st.divider()
+            st.markdown("### Distribuição por Natureza (BICT)")
+            df_nat = df_curso[df_curso["natureza"].notna()].copy()
+            nat_ch = df_nat.groupby("natureza")["carga_horaria"].sum().reset_index()
+            _labels = {"HUM": "Humanidades", "INT": "Interdisciplinar",
+                       "TEC": "Tecnologia", "CFU": "Ciências Fund."}
+            nat_ch["label"] = nat_ch["natureza"].map(_labels).fillna(nat_ch["natureza"])
+            fig4 = px.pie(nat_ch, values="carga_horaria", names="label",
+                          color_discrete_sequence=px.colors.qualitative.Set2)
+            fig4.update_layout(height=300, margin=dict(t=10))
+            st.plotly_chart(fig4, use_container_width=True)

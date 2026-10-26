@@ -1,121 +1,129 @@
-"""
-views/matriz.py — Visualização da matriz curricular (grade por etapas).
-"""
-import pandas as pd
+"""Visualização da matriz curricular em grade por etapa."""
 import streamlit as st
+import pandas as pd
 
-
-_COR_OBRIG = "#1D9E75"
-_COR_ELET  = "#534AB7"
-_COR_OUTRO = "#888780"
-
-_NATUREZA_LABEL = {
+_COR_CARATER = {
+    "Obrigatória": "#1a6b3c",
+    "Eletiva":     "#1a4a7a",
+}
+_COR_NATUREZA = {
+    "HUM": "#8B1A1A",
+    "INT": "#2E6B4F",
+    "TEC": "#1A4A8B",
+    "CFU": "#6B4F1A",
+}
+_LABEL_NATUREZA = {
     "HUM": "Humanidades",
     "INT": "Interdisciplinar",
-    "TEC": "Tecnológica",
-    "CFU": "Ciências Fundamentais",
-}
-_NATUREZA_COR = {
-    "HUM": "#854F0B",
-    "INT": "#0F6E56",
-    "TEC": "#185FA5",
-    "CFU": "#26215C",
-    None: "#666",
+    "TEC": "Tecnologia",
+    "CFU": "Ciências Fund.",
 }
 
 
-def _card_html(row: pd.Series) -> str:
-    """Gera o HTML de um cartão de disciplina."""
-    cor_borda = (
-        _COR_OBRIG if row["carater"] == "Obrigatória"
-        else _COR_ELET if row["carater"] == "Eletiva"
-        else _COR_OUTRO
-    )
-    nat = row.get("natureza")
-    nat_label = _NATUREZA_LABEL.get(nat, nat or "")
-    nat_cor = _NATUREZA_COR.get(nat, "#666")
-    prereqs = row.get("prereqs", [])
-    prereq_txt = ", ".join(prereqs) if isinstance(prereqs, list) and prereqs else ""
+def _badge_carater(carater: str) -> str:
+    cor = _COR_CARATER.get(carater, "#555")
+    return f'<span style="background:{cor};color:#fff;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:600">{carater}</span>'
 
-    badge_nat = (
-        f'<span style="font-size:10px;background:{nat_cor};color:#fff;'
-        f'padding:1px 6px;border-radius:10px;margin-right:4px">{nat_label}</span>'
-        if nat_label else ""
-    )
-    badge_car = (
-        f'<span style="font-size:10px;background:{cor_borda};color:#fff;'
-        f'padding:1px 6px;border-radius:10px">{row["carater"]}</span>'
-    )
-    prereq_html = (
-        f'<div style="font-size:10px;color:#888;margin-top:4px">Pré-req: {prereq_txt}</div>'
-        if prereq_txt else ""
-    )
 
-    return f"""
-    <div style="border-left:3px solid {cor_borda};background:#fff;
-                border-radius:6px;padding:8px 10px;margin-bottom:6px;
-                box-shadow:0 1px 3px rgba(0,0,0,.08)">
-      <div style="font-size:10px;font-family:monospace;color:#888">{row['codigo']}</div>
-      <div style="font-size:12px;font-weight:600;line-height:1.3;margin:3px 0">{row['nome']}</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
-        {badge_nat}{badge_car}
-        <span style="font-size:10px;color:#555;margin-left:auto">{int(row['creditos'])}cr · {int(row['carga_horaria'])}h</span>
-      </div>
-      {prereq_html}
-    </div>"""
+def _badge_natureza(natureza: str) -> str:
+    if not natureza:
+        return ""
+    cor = _COR_NATUREZA.get(natureza, "#888")
+    label = _LABEL_NATUREZA.get(natureza, natureza)
+    return f'<span style="background:{cor};color:#fff;padding:2px 6px;border-radius:10px;font-size:10px;margin-left:4px">{label}</span>'
 
 
 def render_matriz(df_curso: pd.DataFrame) -> None:
-    """Renderiza a matriz curricular completa de um curso."""
-    etapas = sorted(
-        [e for e in df_curso["etapa"].dropna().unique()],
-        key=lambda x: int(x)
-    )
-    sem_etapa = df_curso[df_curso["etapa"].isna()]
-    df_etapas = df_curso[df_curso["etapa"].notna()]
+    if df_curso.empty:
+        st.warning("Sem dados para este curso.")
+        return
 
-    n_cols = min(len(etapas), 6)  # máx 6 colunas lado a lado
-    cols_por_linha = n_cols
+    # ── Resumo numérico ──────────────────────────────────────────────────
+    # Deduplica por código para evitar contar a mesma disciplina duas vezes
+    df_unico = df_curso.drop_duplicates(subset="codigo")
+    ch_total = int(df_unico["carga_horaria"].sum())
+    cr_total = int(df_unico["creditos"].sum())
+    n_obrig = int((df_curso["carater"] == "Obrigatória").sum())
+    n_elet  = int((df_curso["carater"] == "Eletiva").sum())
+    n_total = len(df_curso)
 
-    # Estatísticas rápidas
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total de componentes", len(df_curso))
-    c2.metric("Obrigatórias", len(df_curso[df_curso["carater"] == "Obrigatória"]))
-    c3.metric("Eletivas", len(df_curso[df_curso["carater"] == "Eletiva"]))
-    c4.metric("Carga horária total",
-              f"{int(df_curso.groupby('codigo')['carga_horaria'].first().sum())}h")
+    c1.metric("Componentes", n_total)
+    c2.metric("Obrigatórias", n_obrig)
+    c3.metric("Eletivas", n_elet)
+    c4.metric("Carga Horária Total", f"{ch_total}h")
 
-    st.markdown("---")
+    st.divider()
 
-    # Grade por etapas
-    for i in range(0, len(etapas), cols_por_linha):
-        grupo = etapas[i:i + cols_por_linha]
-        cols = st.columns(len(grupo))
-        for col, etapa in zip(cols, grupo):
-            disc_etapa = df_etapas[df_etapas["etapa"] == etapa].sort_values("nome")
-            ch_etapa = int(disc_etapa["carga_horaria"].sum())
-            cr_etapa = int(disc_etapa["creditos"].sum())
-            with col:
-                st.markdown(
-                    f'<div style="background:#26215C;color:#fff;border-radius:8px 8px 0 0;'
-                    f'padding:6px 10px;font-weight:600;font-size:13px;text-align:center">'
-                    f'Etapa {int(etapa)}<br>'
-                    f'<span style="font-size:10px;font-weight:400">{cr_etapa}cr · {ch_etapa}h</span>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-                html = "".join(_card_html(row) for _, row in disc_etapa.iterrows())
-                st.markdown(
-                    f'<div style="max-height:600px;overflow-y:auto;'
-                    f'background:#f7f6f2;padding:6px;border-radius:0 0 8px 8px">{html}</div>',
-                    unsafe_allow_html=True
-                )
+    # ── Grade por etapa ──────────────────────────────────────────────────
+    etapas = sorted(df_curso["etapa"].dropna().unique())
+    sem_etapa = df_curso[df_curso["etapa"].isna()]
 
-    # Sem etapa definida
-    if not sem_etapa.empty:
-        st.markdown("### Sem Etapa Definida")
-        html = "".join(_card_html(row) for _, row in sem_etapa.iterrows())
-        st.markdown(
-            f'<div style="background:#f7f6f2;padding:8px;border-radius:8px">{html}</div>',
-            unsafe_allow_html=True
+    if not etapas:
+        st.info("Nenhuma etapa identificada.")
+        return
+
+    # Filtros inline
+    col_f1, col_f2 = st.columns([1, 1])
+    with col_f1:
+        etapas_sel = st.multiselect(
+            "Filtrar etapas",
+            options=[int(e) for e in etapas],
+            default=[int(e) for e in etapas],
+            format_func=lambda x: f"Etapa {x}",
         )
+    with col_f2:
+        carater_sel = st.multiselect(
+            "Filtrar caráter",
+            options=df_curso["carater"].unique().tolist(),
+            default=df_curso["carater"].unique().tolist(),
+        )
+
+    df_filtrado = df_curso[
+        df_curso["etapa"].isin(etapas_sel) &
+        df_curso["carater"].isin(carater_sel)
+    ]
+
+    # Renderiza colunas por etapa
+    etapas_vis = sorted(df_filtrado["etapa"].dropna().unique())
+    if not etapas_vis:
+        st.info("Nenhuma disciplina para os filtros selecionados.")
+        return
+
+    colunas = st.columns(len(etapas_vis))
+    for col, etapa in zip(colunas, etapas_vis):
+        df_etapa = df_filtrado[df_filtrado["etapa"] == etapa]
+        ch_etapa = int(df_etapa["carga_horaria"].sum())
+        with col:
+            st.markdown(
+                f"<div style='text-align:center;font-weight:700;font-size:13px;"
+                f"background:#f0f2f6;padding:6px;border-radius:6px;margin-bottom:8px'>"
+                f"Etapa {int(etapa)}<br><small>{len(df_etapa)} disc · {ch_etapa}h</small></div>",
+                unsafe_allow_html=True,
+            )
+            for _, row in df_etapa.sort_values("nome").iterrows():
+                prereqs_txt = ""
+                if row["prereqs"]:
+                    prereqs_txt = f"<div style='font-size:9px;color:#888;margin-top:4px'>Pré: {', '.join(row['prereqs'])}</div>"
+                natureza_badge = _badge_natureza(row.get("natureza", ""))
+                carater_badge = _badge_carater(row["carater"])
+                ch = int(row["carga_horaria"])
+
+                card = f"""
+<div style="border:1px solid #ddd;border-radius:8px;padding:8px 10px;margin-bottom:8px;
+background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+  <div style="font-size:10px;color:#888;font-family:monospace">{row['codigo']}</div>
+  <div style="font-size:12px;font-weight:600;line-height:1.3;margin:3px 0">{row['nome']}</div>
+  <div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;margin-top:5px">
+    {carater_badge}{natureza_badge}
+    <span style="margin-left:auto;font-size:10px;color:#555">{ch}h</span>
+  </div>
+  {prereqs_txt}
+</div>"""
+                st.markdown(card, unsafe_allow_html=True)
+
+    # Disciplinas sem etapa
+    if not sem_etapa.empty and len(carater_sel) == len(df_curso["carater"].unique()):
+        with st.expander(f"Sem etapa definida ({len(sem_etapa)})"):
+            for _, row in sem_etapa.iterrows():
+                st.markdown(f"- `{row['codigo']}` {row['nome']} — {row['carater']} — {int(row['carga_horaria'])}h")

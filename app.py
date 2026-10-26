@@ -1,224 +1,153 @@
-"""
-app.py — Ponto de entrada do sistema MatrizBI UFRGS.
-
-Execução: streamlit run app.py
-"""
+"""Visualizador de Matrizes Curriculares — UFRGS BICT"""
 import streamlit as st
 import pandas as pd
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent))
 
 from src.loader import load_excel
 from src.processor import processar_todos, entradas_para_dataframe
-from src.validator import validar, resumo_validacao
 from src.views.matriz import render_matriz
 from src.views.grafo import render_grafo
 from src.views.distribuicao import render_distribuicao
 from src.views.comparacao import render_comparacao
 
-# ── Configuração da página ─────────────────────────────────────────────────────
+# ── Nomes amigáveis ──────────────────────────────────────────────────────────
+NOMES_CURSOS = {
+    "BICT": "Bacharelado Interdisciplinar em C&T",
+    "ES":   "Engenharia de Serviços",
+    "EGE":  "Engenharia de Gestão de Energia",
+    "LG":   "Licenciatura em Geografia",
+    "GPDR": "Gestão Pública p/ o Des. Regional",
+}
+
 st.set_page_config(
-    page_title="Currículos UFRGS",
+    page_title="Matrizes Curriculares BICT",
     page_icon="🎓",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
-# ── CSS global ────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700&display=swap');
-html, body, [class*="css"] { font-family: 'Syne', sans-serif; }
-.stMetric label { font-size: 12px !important; }
-.block-container { padding-top: 1.5rem; }
-</style>
-""", unsafe_allow_html=True)
+# ── Carregamento de dados ────────────────────────────────────────────────────
+@st.cache_data(show_spinner="Carregando matrizes...")
+def carregar_dados(caminho: str):
+    dados_brutos = load_excel(caminho)
+    entradas, componentes = processar_todos(dados_brutos)
+    df = entradas_para_dataframe(entradas)
+    return df, list(dados_brutos.keys())
 
-# ── Caminho do arquivo de dados ───────────────────────────────────────────────
-DATA_DIR = Path(__file__).parent / "data"
-ARQUIVO_PADRAO = DATA_DIR / "Curriculo_sistema_2026-2.xlsx"
+DADOS_PADRAO = Path(__file__).parent / "data" / "Curriculo_sistema_2026-2.xlsx"
 
-
-@st.cache_data(show_spinner="Carregando dados curriculares…")
-def carregar_dados(path: str) -> pd.DataFrame:
-    """Carrega, processa e retorna DataFrame consolidado. Cache automático."""
-    dados_brutos = load_excel(path)
-    entradas, _ = processar_todos(dados_brutos)
-    return entradas_para_dataframe(entradas)
-
-
-# ── Sidebar ────────────────────────────────────────────────────────────────────
+# Upload opcional na sidebar
 with st.sidebar:
-    st.markdown("## 🎓 Currículos UFRGS")
-    st.markdown("---")
+    st.markdown("## ⚙️ Configurações")
+    arquivo = st.file_uploader("Substituir arquivo de dados (.xlsx)", type="xlsx")
 
-    # Upload ou arquivo padrão
-    uploaded = st.file_uploader(
-        "Substituir planilha de dados:",
-        type=["xlsx"],
-        help="Faça upload de uma versão atualizada da planilha.",
-    )
-
-    if uploaded:
-        # Salva temporariamente e usa
-        tmp_path = DATA_DIR / "upload_temp.xlsx"
-        tmp_path.write_bytes(uploaded.read())
-        ARQUIVO_USADO = str(tmp_path)
-        st.success("Planilha carregada com sucesso!")
-    else:
-        ARQUIVO_USADO = str(ARQUIVO_PADRAO)
-
-    try:
-        df_todos = carregar_dados(ARQUIVO_USADO)
-    except Exception as e:
-        st.error(f"Erro ao carregar dados: {e}")
+if arquivo:
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+        tmp.write(arquivo.read())
+        tmp_path = tmp.name
+    df_todos, cursos_disponiveis = carregar_dados(tmp_path)
+else:
+    if not DADOS_PADRAO.exists():
+        st.error(f"Arquivo de dados não encontrado: {DADOS_PADRAO}")
         st.stop()
+    df_todos, cursos_disponiveis = carregar_dados(str(DADOS_PADRAO))
 
-    cursos_disponiveis = sorted(df_todos["curso"].unique().tolist())
-
-    st.markdown("---")
-    st.markdown("**Navegação**")
+# ── Navegação na sidebar ─────────────────────────────────────────────────────
+with st.sidebar:
+    st.divider()
     pagina = st.radio(
-        "Visualização:",
-        options=[
-            "🏠 Início",
-            "📋 Matriz Curricular",
-            "🕸️ Grafo de Pré-requisitos",
-            "📊 Distribuição CH/Créditos",
-            "🔄 Comparação entre Cursos",
-            "⚠️ Validação",
-        ],
+        "Navegação",
+        ["🏠 Início", "📋 Matriz Curricular", "🔗 Grafo de Pré-req.", "📊 Distribuição", "🔄 Comparação"],
         label_visibility="collapsed",
     )
 
-    st.markdown("---")
+# ── SELETOR DE CURSO PROEMINENTE ─────────────────────────────────────────────
+PAGINAS_COM_CURSO = ["📋 Matriz Curricular", "🔗 Grafo de Pré-req.", "📊 Distribuição"]
 
-    # Seleção de curso (para páginas de curso único)
-    if pagina not in ("🏠 Início", "🔄 Comparação entre Cursos", "⚠️ Validação"):
-        curso_sel = st.selectbox("Curso:", options=cursos_disponiveis)
-    else:
-        curso_sel = None
+if pagina in PAGINAS_COM_CURSO:
+    opcoes = {NOMES_CURSOS.get(c, c): c for c in cursos_disponiveis}
+    labels = list(opcoes.keys())
 
-    # Filtros adicionais
-    if pagina == "📋 Matriz Curricular" and curso_sel:
-        st.markdown("---")
-        st.markdown("**Filtros**")
-        carater_opts = df_todos[df_todos["curso"] == curso_sel]["carater"].unique().tolist()
-        carater_filtro = st.multiselect("Caráter:", carater_opts, default=carater_opts,
-                                         key="filtro_carater_matriz")
+    st.markdown(
+        "<h2 style='margin-bottom:4px'>Selecione o curso</h2>",
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(min(len(labels), 5))
+    curso_sel_label = st.session_state.get("curso_sel_label", labels[0])
 
-        etapas_opts = sorted([
-            int(e) for e in df_todos[df_todos["curso"] == curso_sel]["etapa"].dropna().unique()
-        ])
-        etapas_filtro = st.multiselect("Etapas:", etapas_opts, default=etapas_opts,
-                                        key="filtro_etapas_matriz")
-    else:
-        carater_filtro = None
-        etapas_filtro = None
+    for i, (col, label) in enumerate(zip(cols, labels)):
+        with col:
+            ativo = curso_sel_label == label
+            cor_bg = "#1a6b3c" if ativo else "#f0f2f6"
+            cor_tx = "#fff" if ativo else "#333"
+            if st.button(label, key=f"btn_curso_{i}",
+                         use_container_width=True):
+                st.session_state["curso_sel_label"] = label
+                st.rerun()
 
-    st.markdown("---")
-    st.caption(f"Cursos carregados: {', '.join(cursos_disponiveis)}")
+    curso_sel_label = st.session_state.get("curso_sel_label", labels[0])
+    curso_sel = opcoes[curso_sel_label]
+    df_curso = df_todos[df_todos["curso"] == curso_sel].copy()
 
+    st.markdown(f"### {curso_sel_label} `({curso_sel})`")
+    st.divider()
 
-# ── Área principal ─────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# PÁGINAS
+# ═══════════════════════════════════════════════════════════════════════════
 
 if pagina == "🏠 Início":
-    st.title("Sistema de Visualização Curricular")
-    st.markdown("**UFRGS — Campus Litoral Norte**")
-    st.markdown("---")
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Cursos carregados", len(cursos_disponiveis))
-    col2.metric("Componentes únicos", df_todos["codigo"].nunique())
-    col3.metric("Total de entradas na matriz", len(df_todos))
-
-    st.markdown("---")
-    st.markdown("### Cursos disponíveis")
-    for curso in cursos_disponiveis:
-        df_c = df_todos[df_todos["curso"] == curso]
-        n_obrig = len(df_c[df_c["carater"] == "Obrigatória"])
-        n_elet = len(df_c[df_c["carater"] == "Eletiva"])
-        ch_total = int(df_c.groupby("codigo")["carga_horaria"].first().sum())
-        st.markdown(
-            f'<div style="border:1px solid #e4e2d9;border-radius:10px;padding:14px;'
-            f'margin-bottom:10px;background:#fff">'
-            f'<b style="font-size:16px">{curso}</b><br>'
-            f'<span style="color:#1D9E75">{n_obrig} obrigatórias</span> · '
-            f'<span style="color:#534AB7">{n_elet} eletivas</span> · '
-            f'<span style="color:#555">{ch_total}h total</span>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-
-    st.markdown("---")
+    st.title("🎓 Matrizes Curriculares — UFRGS")
     st.markdown("""
-    ### Como usar
-    Use o **menu lateral** para navegar entre as visualizações:
-    - **Matriz Curricular** — grade de componentes por etapa
-    - **Grafo de Pré-requisitos** — relações de dependência entre disciplinas
-    - **Distribuição CH/Créditos** — análise de carga horária por etapa e caráter
-    - **Comparação** — componentes compartilhados e diferenças entre cursos
-    - **Validação** — verificação de inconsistências nos dados
+    Sistema de visualização das matrizes curriculares do
+    **Bacharelado Interdisciplinar em Ciência e Tecnologia (BICT)**
+    e dos cursos de segundo ciclo.
+    """)
 
-    Para **atualizar os dados**, faça upload de uma nova planilha no menu lateral.
-    O sistema reconhece automaticamente qualquer nova aba como novo curso.
+    st.divider()
+    st.markdown("### Cursos disponíveis")
+    cols = st.columns(min(len(cursos_disponiveis), 3))
+    for i, curso in enumerate(cursos_disponiveis):
+        with cols[i % 3]:
+            df_c = df_todos[df_todos["curso"] == curso]
+            ch = int(df_c.drop_duplicates("codigo")["carga_horaria"].sum())
+            nome_longo = NOMES_CURSOS.get(curso, curso)
+            st.metric(
+                label=nome_longo,
+                value=f"{len(df_c)} componentes",
+                delta=f"{ch}h total",
+            )
+
+    st.divider()
+    st.markdown("""
+    **Como usar:**
+    - Use o menu à esquerda para navegar entre as seções
+    - Em cada seção, escolha o curso pelos botões no topo
+    - Para comparar cursos, acesse a seção **Comparação**
     """)
 
 elif pagina == "📋 Matriz Curricular":
-    st.title(f"Matriz Curricular — {curso_sel}")
-    df_curso = df_todos[df_todos["curso"] == curso_sel].copy()
-
-    # Aplicar filtros
-    if carater_filtro is not None:
-        df_curso = df_curso[df_curso["carater"].isin(carater_filtro)]
-    if etapas_filtro is not None:
-        df_curso = df_curso[
-            df_curso["etapa"].isna() | df_curso["etapa"].isin(etapas_filtro)
-        ]
-
     render_matriz(df_curso)
 
-elif pagina == "🕸️ Grafo de Pré-requisitos":
-    st.title(f"Grafo de Pré-requisitos — {curso_sel}")
-    st.caption("Use o scroll para zoom. Arraste para mover o grafo.")
-    df_curso = df_todos[df_todos["curso"] == curso_sel].copy()
+elif pagina == "🔗 Grafo de Pré-req.":
+    st.markdown("#### Grafo de pré-requisitos")
     render_grafo(df_curso)
 
-elif pagina == "📊 Distribuição CH/Créditos":
-    st.title(f"Distribuição — {curso_sel}")
-    df_curso = df_todos[df_todos["curso"] == curso_sel].copy()
+elif pagina == "📊 Distribuição":
+    st.markdown("#### Distribuição de carga horária e créditos")
     render_distribuicao(df_curso)
 
-elif pagina == "🔄 Comparação entre Cursos":
-    st.title("Comparação entre Cursos")
-    cursos_comp = st.multiselect(
-        "Selecione os cursos para comparar:",
-        options=cursos_disponiveis,
-        default=cursos_disponiveis[:2] if len(cursos_disponiveis) >= 2 else cursos_disponiveis,
+elif pagina == "🔄 Comparação":
+    st.title("🔄 Comparação entre cursos")
+    opcoes_comp = {NOMES_CURSOS.get(c, c): c for c in cursos_disponiveis}
+    labels_comp = list(opcoes_comp.keys())
+    sel = st.multiselect(
+        "Selecione 2 ou mais cursos para comparar",
+        labels_comp,
+        default=labels_comp[:2],
     )
-    render_comparacao(df_todos, cursos_comp)
-
-elif pagina == "⚠️ Validação":
-    st.title("Validação dos Dados")
-    problemas = validar(df_todos)
-    resumo = resumo_validacao(problemas)
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total de problemas", resumo["total"])
-    c2.metric("Erros", resumo["erros"], delta_color="inverse")
-    c3.metric("Avisos", resumo["avisos"])
-
-    if not problemas:
-        st.success("✅ Nenhum problema encontrado nos dados.")
-    else:
-        df_prob = pd.DataFrame([
-            {"Nível": p.nivel.upper(), "Curso": p.curso,
-             "Código": p.codigo, "Mensagem": p.mensagem}
-            for p in problemas
-        ])
-        nivel_filtro = st.multiselect(
-            "Filtrar por nível:",
-            ["ERRO", "AVISO"],
-            default=["ERRO", "AVISO"],
-        )
-        df_exib = df_prob[df_prob["Nível"].isin(nivel_filtro)]
-        st.dataframe(df_exib, use_container_width=True, hide_index=True)
+    cursos_sel = [opcoes_comp[s] for s in sel]
+    render_comparacao(df_todos, cursos_sel)

@@ -1,161 +1,115 @@
-"""
-processor.py — Transforma os DataFrames brutos em estrutura normalizada.
-
-Responsabilidades:
-  - Detectar etapas (linhas de título como "Etapa 1")
-  - Separar nome e pré-requisitos do campo misto
-  - Normalizar caráter, etapa, créditos
-  - Produzir lista de EntradaMatriz e dict de Componentes
-"""
+"""Processa os DataFrames brutos e retorna EntradaMatriz normalizadas."""
 import re
 import pandas as pd
-from typing import Optional
-from src.models import Componente, EntradaMatriz
+from .models import EntradaMatriz, Componente
 
-# Regex para identificar códigos de componentes (DIL01113, DIR04016, VAERE201...)
 _CODIGO_RE = re.compile(r'\b([A-Z]{2,}[0-9]{2,}(?:/[0-9]+)*)\b')
-
-# Linha que indica início de uma etapa
-_ETAPA_RE = re.compile(r'^Etapa\s+(\d+)$', re.IGNORECASE)
-_SEM_ETAPA_RE = re.compile(r'sem\s+etapa', re.IGNORECASE)
+_ETAPA_RE = re.compile(r'Etapa\s+(\d+)', re.IGNORECASE)
 
 
-def _parse_nome_prereqs(campo: str) -> tuple[str, list[str]]:
-    """
-    Extrai nome limpo e lista de pré-requisitos do campo misto.
-
-    Formato exportado pelo sistema UFRGS:
-      'NOME DA DISCIPLINA\n - COD1 - NOME PREREQ1  - e COD2 - NOME PREREQ2'
-    ou
-      'NOME DA DISCIPLINA\n - COD1 - NOME PREREQ1'
-    """
-    if not campo or not isinstance(campo, str):
-        return ("", [])
-
-    # Normalizar quebras de linha e espaços múltiplos
-    campo = campo.replace('\n', ' ').strip()
-    campo = re.sub(r'  +', ' ', campo)
-
-    codigos_encontrados = _CODIGO_RE.findall(campo)
-
-    if not codigos_encontrados:
-        return (campo.strip(), [])
-
-    # Nome = tudo antes do primeiro código, removendo separador ' - '
-    primeiro_cod = codigos_encontrados[0]
-    idx = campo.find(primeiro_cod)
-    nome_bruto = campo[:idx]
-    nome = re.sub(r'\s*-\s*$', '', nome_bruto).strip()
-
-    # Pré-requisitos = todos os códigos encontrados após o nome
-    # (excluir se o único código É o próprio componente — não deve ocorrer, mas defensivo)
-    prereqs = codigos_encontrados
-
-    return (nome, prereqs)
+def _parse_prereqs(texto: str) -> tuple[str, list[str]]:
+    """Separa nome e lista de códigos de pré-requisito."""
+    if not texto or not isinstance(texto, str):
+        return str(texto or ""), []
+    partes = texto.split('\n', 1)
+    nome = partes[0].strip()
+    prereqs = []
+    if len(partes) > 1:
+        prereqs = _CODIGO_RE.findall(partes[1])
+    return nome, prereqs
 
 
 def _normalizar_carater(valor) -> str:
     if not valor:
         return "Desconhecido"
-    v = str(valor).strip()
-    if "letiva" in v:
-        return "Eletiva"
-    if "brigatória" in v or "brigatorio" in v.lower() or "brigat" in v.lower():
+    v = str(valor).strip().lower()
+    if "obrig" in v:
         return "Obrigatória"
-    return v
+    if "elet" in v:
+        return "Eletiva"
+    return str(valor).strip()
 
 
-def _normalizar_etapa(valor) -> Optional[int]:
+def _normalizar_etapa(valor) -> int | None:
     if valor is None:
         return None
+    m = _ETAPA_RE.search(str(valor))
+    if m:
+        return int(m.group(1))
     try:
-        return int(float(str(valor)))
+        return int(valor)
     except (ValueError, TypeError):
         return None
 
 
-def _eh_linha_cabecalho(row: tuple) -> bool:
-    """Verdadeiro se a linha é cabeçalho de coluna (repete a cada etapa)."""
-    return row[0] == "Código" or (
-        isinstance(row[1], str) and "Atividade de Ensino" in str(row[1])
-    )
+def _get_col(row: dict, *candidatos) -> any:
+    """Retorna o primeiro valor não-None entre as colunas candidatas."""
+    for c in candidatos:
+        if c in row and row[c] is not None and str(row[c]).strip() != "":
+            return row[c]
+    return None
 
 
 def processar_curso(nome_curso: str, df: pd.DataFrame) -> list[EntradaMatriz]:
-    """
-    Processa o DataFrame bruto de um curso e retorna lista de EntradaMatriz.
-
-    Detecta automaticamente a etapa atual lendo as linhas de título.
-    """
+    """Converte um DataFrame de uma aba em lista de EntradaMatriz."""
     entradas = []
-    etapa_atual: Optional[int] = None
-    tem_natureza = (df.shape[1] >= 7)  # BICT tem coluna extra Natureza
+    cols = list(df.columns)
 
     for _, row in df.iterrows():
-        row = tuple(row)
-        celula_0 = str(row[0]).strip() if row[0] is not None else ""
-        celula_1 = str(row[1]).strip() if row[1] is not None else ""
+        row = row.to_dict()
 
-        # — Linha de título de etapa —
-        m_etapa = _ETAPA_RE.match(celula_0)
-        if m_etapa:
-            etapa_atual = int(m_etapa.group(1))
+        # Código
+        codigo = str(_get_col(row, "Código", "codigo", "CÓDIGO") or "").strip()
+        if not codigo or len(codigo) < 4:
             continue
 
-        # — "Sem Etapa" —
-        if _SEM_ETAPA_RE.search(celula_0) or _SEM_ETAPA_RE.search(celula_1):
-            etapa_atual = None
-            continue
+        # Nome + pré-requisitos (campo pode ter \n embutido)
+        campo_atividade = _get_col(row,
+            "Atividade de Ensino/Pré-Requisito",
+            "Atividade de Ensino",
+            "atividade",
+        )
+        nome, prereqs = _parse_prereqs(str(campo_atividade or ""))
 
-        # — Linha de cabeçalho de colunas —
-        if _eh_linha_cabecalho(row):
-            continue
+        # Etapa — pode estar numa coluna dedicada ou embutida
+        etapa_raw = _get_col(row, "Etapa", "etapa")
+        etapa = _normalizar_etapa(etapa_raw)
 
-        # — Linha vazia ou sem dados relevantes —
-        codigo_raw = row[0]
-        campo_atividade = row[1] if len(row) > 1 else None
+        # Caráter
+        carater = _normalizar_carater(_get_col(row, "Caráter", "Carater", "caráter"))
 
-        if not campo_atividade:
-            continue
+        # Números
+        def _float(v):
+            try:
+                return float(v or 0)
+            except (ValueError, TypeError):
+                return 0.0
 
-        # Código pode ser None para alguns componentes (TCC sem código no sistema)
-        codigo = str(codigo_raw).strip() if codigo_raw else None
+        creditos = _float(_get_col(row, "Créditos", "creditos"))
+        ch = _float(_get_col(row, "Carga Horária", "carga_horaria"))
+        che = _float(_get_col(row, "Carga Horária Extensão (CHE)", "che"))
 
-        nome, prereqs = _parse_nome_prereqs(str(campo_atividade))
-        if not nome:
-            continue
+        # Natureza (só BICT)
+        natureza = str(_get_col(row, "Natureza", "natureza") or "").strip() or None
 
-        carater = _normalizar_carater(row[2] if len(row) > 2 else None)
-        creditos = float(row[3]) if len(row) > 3 and row[3] is not None else 0.0
-        carga_horaria = float(row[4]) if len(row) > 4 and row[4] is not None else 0.0
-        che = float(row[5]) if len(row) > 5 and row[5] is not None else 0.0
-        natureza = str(row[6]).strip() if tem_natureza and len(row) > 6 and row[6] else None
-
-        entrada = EntradaMatriz(
+        entradas.append(EntradaMatriz(
             curso=nome_curso,
-            codigo=codigo or f"SEM_CODIGO_{nome[:20]}",
+            codigo=codigo,
             nome=nome,
-            etapa=etapa_atual,
+            etapa=etapa,
             carater=carater,
             creditos=creditos,
-            carga_horaria=carga_horaria,
+            carga_horaria=ch,
             che=che,
             prereqs=prereqs,
             natureza=natureza,
-        )
-        entradas.append(entrada)
+        ))
 
     return entradas
 
 
-def processar_todos(dados_brutos: dict[str, pd.DataFrame]) -> tuple[
-    list[EntradaMatriz], dict[str, Componente]
-]:
-    """
-    Processa todos os cursos e retorna:
-      - lista completa de EntradaMatriz (uma por disciplina×curso)
-      - dict de Componentes únicos {codigo: Componente}
-    """
+def processar_todos(dados_brutos: dict[str, pd.DataFrame]) -> tuple[list[EntradaMatriz], dict[str, Componente]]:
+    """Processa todos os cursos e constrói o catálogo de componentes."""
     todas_entradas: list[EntradaMatriz] = []
     componentes: dict[str, Componente] = {}
 
@@ -163,7 +117,6 @@ def processar_todos(dados_brutos: dict[str, pd.DataFrame]) -> tuple[
         entradas = processar_curso(nome_curso, df)
         todas_entradas.extend(entradas)
 
-        # Registrar componentes únicos (primeira ocorrência define nome e natureza)
         for e in entradas:
             if e.codigo not in componentes:
                 componentes[e.codigo] = Componente(
@@ -176,7 +129,9 @@ def processar_todos(dados_brutos: dict[str, pd.DataFrame]) -> tuple[
 
 
 def entradas_para_dataframe(entradas: list[EntradaMatriz]) -> pd.DataFrame:
-    """Converte lista de EntradaMatriz em DataFrame para uso nas views."""
+    """Converte lista de EntradaMatriz em DataFrame pandas."""
+    if not entradas:
+        return pd.DataFrame()
     return pd.DataFrame([
         {
             "curso": e.curso,
